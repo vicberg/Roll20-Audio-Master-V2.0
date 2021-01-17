@@ -111,8 +111,6 @@ var Roll20AM = Roll20AM || (function() {
 		        }).id;
 		    }
 		}
-        log('  >Roll20AM has had a significant update. The command syntax has changed and any currently existing macros will need to be updated. Please check the **[forum thread](permalink to your release post)**');
-		log('  >Stored settings loaded<');
 //		storeTracks();
 //		log('  >Tracks updated<');
 		generateHelp();
