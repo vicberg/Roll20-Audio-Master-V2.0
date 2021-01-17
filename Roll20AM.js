@@ -8,7 +8,7 @@ Thanks to: The Aaron, Arcane Scriptomancer and Stephen S. for their help Alpha a
 var Roll20AM = Roll20AM || (function() {
     'use strict';
 
-    var version = '2.14',
+    var version = '2.15',
         lastUpdate = 1491352004,
         schemaVersion = 2.02,
         debug = true,
@@ -157,8 +157,9 @@ var Roll20AM = Roll20AM || (function() {
             access:state.Roll20AM.access || 'None',//Limited or Full access to Roll20AM for Players
             tag:state.Roll20AM.tag || '-players-',//the player access tag that should be appended to tracks that are player accessible
             menu:state.Roll20AM.menu,
-            nomenu:state.Roll20AM.nomenu || 'On'
-
+            nomenu:state.Roll20AM.nomenu || 'On',
+            playlistMode:state.Roll20AM.playlistMode || 'loop',
+            trackMode:state.Roll20AM.trackMode || 'loop'
         };
     },
 
@@ -291,7 +292,13 @@ var Roll20AM = Roll20AM || (function() {
             //Import Jukebox
             mvTextButton = makeButton('!roll20AM --config,import','Import Jukebox','white','black');
             output += '<div>'+mvTextButton+'</div>';
-            //Import Jukebox
+            //Import Default
+            mvTextButton = makeButton('!roll20AM --edit,playlistMode=?{Default|Single,single|Loop,loop|Random Single,randomSingle|Random Loop,randomLoop|Shuffle,shuffle|Together,together} --config',state.Roll20AM.playlistMode,'white','black');
+            output += '<b>Playlist Mode: </b><div style="display:inline-block">'+mvTextButton+'</div><br>';        
+            //Import Default
+            mvTextButton = makeButton('!roll20AM --config,trackMode=?{Default|Single,single|Loop,loop} --config',state.Roll20AM.trackMode,'white','black');
+            output += '<b>Track Mode: </b><div style="display:inline-block">'+mvTextButton+'</div><br>';               
+            //Remove Everything
             mvTextButton = makeButton('!roll20AM --config,remove','Remove All','white','black');
             output += '<div>'+mvTextButton+'</div>';       
             //Viewed By Button
@@ -530,6 +537,7 @@ var Roll20AM = Roll20AM || (function() {
                     if (cmdDetails.details.nomenu){
                         state.Roll20AM.menu = cmdDetails.details.nomenu
                     }
+                   
                     //prevent players from doing things they shouldn't.  Playlist level actions and edit commands
                     if (restrict){
                         if (cmdDetails.action == 'edit' ){
@@ -589,15 +597,21 @@ var Roll20AM = Roll20AM || (function() {
 	},
 	//Extracts inline rolls
 	inlineExtract = function(msg){
-	    return _.chain(msg.inlinerolls)
-				.reduce(function(m,v,k){
-					m['$[['+k+']]']=v.results.total || 0;
-					return m;
-				},{})
-				.reduce(function(m,v,k){
-					return m.replace(k,v);
-				},msg.content)
-				.value();
+        if(msg.hasOwnProperty('inlinerolls')){
+          return msg.inlinerolls
+            .reduce((m,v,k) => {
+              let ti=v.results.rolls.reduce((m2,v2) => {
+                if(v2.hasOwnProperty('table')){
+                  m2.push(v2.results.reduce((m3,v3) => [...m3,v3.tableItem.name],[]).join(", "));
+                }
+                return m2;
+              },[]).join(', ');
+              return [...m,{k:`$[[${k}]]`, v:(ti.length && ti) || v.results.total || 0}];
+            },[])
+            .reduce((m,o) => m.replace(o.k,o.v), msg.content);
+        } else {
+          return msg.content;
+        }
 	},
     //Extracts the command details from a command string passed from handleInput	
 	cmdExtract = function(cmd){
@@ -638,7 +652,7 @@ var Roll20AM = Roll20AM || (function() {
         command.replace('./', '');
         //split additional command actions
 	    _.each(command.replace(cmdSep.action+',','').split(','),(d)=>{
-            vars=d.match(/(volTick|time|volume|delay|level|menu|mode|restrict|tag|API|access|tag|tag1|tag2|tag3|tag4|tag5|set|unset|filter|delayed|viewBy|display|)(?:\:|=)([^,]+)/) || null;
+            vars=d.match(/(volTick|time|volume|delay|level|menu|mode|restrict|tag|API|access|playlistMode|trackMode|tag|tag1|tag2|tag3|tag4|tag5|set|unset|filter|delayed|viewBy|display|)(?:\:|=)([^,]+)/) || null;
             if(vars){
                 cmdSep.details[vars[1]]=vars[2];
             }else{
@@ -655,6 +669,9 @@ var Roll20AM = Roll20AM || (function() {
 	    //we receive the track object from jukebox.  softstop is set to true upon finish
         if(obj.get('softstop')===true && prev.softstop === false){
             
+            if (!getTrackDetails(obj.get('_id'))) {
+                return;
+            }
             var trackDetails=getTrackDetails(obj.get('_id')),restrict
 
             if (debug){
@@ -924,6 +941,12 @@ var Roll20AM = Roll20AM || (function() {
                     edit(null,null,null,mode,access,who)
                 }                 
             }
+            if (cmdDetails.details.playlistMode) {
+                changeModeMaster(cmdDetails.details.playlistMode,who);
+            }
+            if (cmdDetails.details.trackMode) {
+                changeTrackMaster(cmdDetails.details.trackMode,who);
+            }            
         }else if (list){
             if (cmdDetails.details.volume){
                 changeVolumeList(list,cmdDetails.details.level,who);
@@ -936,7 +959,7 @@ var Roll20AM = Roll20AM || (function() {
             }
             if (cmdDetails.details.access){
                 edit(list,null,null,mode,access,who)
-            }            
+            }   
             if (cmdDetails.details.remove){
                 edit(list,null,cmdDetails.details.remove,null,null,who)
             }     
@@ -1189,19 +1212,22 @@ var Roll20AM = Roll20AM || (function() {
             playTrack(trackID,volume,null,who);
         }) 
 	},  
-
 	//stops the indicated tracks from playing
 	stopList = function(list,who){
+	    var trackDetails
 	    if (debug){
 	        log('Stopping:' + list.name)
 	    }
 	    //stop list and clear current tracks
         list.playing = false;
-        _.each(list.currentTrack,(trackID)=>{
-            if (debug){
-                log('Stopping:' + trackID)
-            }
-            stopTrack(trackID,who)
+        _.each(list.trackids,(trackID)=>{
+            trackDetails=getTrackDetails(trackID)
+            if (trackDetails.playing) {
+                if (debug){
+                    log('Stopping:' + trackID)
+                }
+                stopTrack(trackID,who)
+            }    
         }); 
         list.currentTrack = [];        
 	},	
@@ -1403,6 +1429,26 @@ var Roll20AM = Roll20AM || (function() {
         _.each(state.Roll20AM.playLists,(list)=>{
             changeDelayList(list,level)
         });
+	},	
+	changeModeMaster = function(mode){
+	    if (debug){
+            log('Default Playlist Mode:'+mode)
+	    }	    
+        state.Roll20AM.playlistMode = mode
+         _.each(state.Roll20AM.playLists,(list)=>{
+             changeModeList(list,mode)
+        });
+	},	
+	changeTrackMaster = function(mode){
+	    if (debug){
+            log('Default Track Mode:'+mode)
+	    }	    
+        state.Roll20AM.trackMode = mode
+         _.each(state.Roll20AM.playLists,(list)=>{
+            _.each(list.trackids,(trackID)=>{
+                changeModeTrack(trackID,mode)
+            })
+        });
 	},		
 	//**************************************************************************
     //Edit List Functions 	
@@ -1456,6 +1502,12 @@ var Roll20AM = Roll20AM || (function() {
             changeDelayTrack(trackID,level)
         })            
 	},		
+	changeModeList = function(list,mode){
+	    if (debug){
+            log('Change Mode List:'+mode)
+	    }	    
+        list.mode = mode;
+	},	
 	//******************************************************************************
     //Edit Track Functions 	
     // - Modify the volume in the trackDetails and in some cases, the Jukebox Track
@@ -1502,6 +1554,14 @@ var Roll20AM = Roll20AM || (function() {
             log('Change Delay Track Seconds:'+level)
 	    }	    
         trackDetails.delay = level;
+	},	
+	changeModeTrack = function(trackID,mode){
+	    var trackDetails = getTrackDetails(trackID)
+	    if (debug){
+	        log('Change Mode Track:'+trackID)
+            log('Change Mode:'+mode)
+	    }	    
+        trackDetails.mode = mode;
 	},		
     increaseTrack = function(trackID,who){
         var level, trackDetails=getTrackDetails(trackID),jbTrack=getJukeBox(trackID) 
